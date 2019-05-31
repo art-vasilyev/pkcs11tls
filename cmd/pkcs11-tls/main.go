@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"flag"
@@ -18,6 +19,7 @@ func main() {
 	libPathPtr := flag.String("module", "", "path to the PKCS11 module")
 	pinPtr := flag.String("pin", "", "Smart card PIN")
 	identityURL := flag.String("identity-url", "", "URL of the Identity (Keystone) service (example: https://keystone.stand.loc:443)")
+	caCertPtr := flag.String("cacert", "", "path to the CA certificate (optional)")
 	flag.Parse()
 	if *libPathPtr == "" {
 		log.Fatal("-module is required")
@@ -72,23 +74,24 @@ func main() {
 			PrivateKey:  keyPair,
 		}
 
-		// Load CA cert
-		// caCert, err := ioutil.ReadFile(cacert)
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-		// caCertPool := x509.NewCertPool()
-		// caCertPool.AppendCertsFromPEM(caCert)
-
 		tlsConfig := &tls.Config{
 			Certificates:       []tls.Certificate{certificate},
 			InsecureSkipVerify: true,
-			// RootCAs:      caCertPool,
+		}
+		if *caCertPtr != "" {
+			caCert, err := ioutil.ReadFile(*caCertPtr)
+			if err != nil {
+				log.Fatal(err)
+			}
+			caCertPool := x509.NewCertPool()
+			caCertPool.AppendCertsFromPEM(caCert)
+			tlsConfig.RootCAs = caCertPool
 		}
 		transport := &http.Transport{TLSClientConfig: tlsConfig}
 		client := &http.Client{Transport: transport}
 
-		url := fmt.Sprintf("%s/v3/OS-FEDERATION/identity_providers/9519a95c0cb0594454e5705d1a77a541802fa14d679ed7c12aea633b6876266c/protocols/x509/auth", *identityURL)
+		identityProvider := getIdentityProvider(x509cert)
+		url := fmt.Sprintf("%s/v3/OS-FEDERATION/identity_providers/%s/protocols/x509/auth", *identityURL, identityProvider)
 		req, _ := http.NewRequest("GET", url, nil)
 		req.Header.Add("X-Domain-Name", domainName)
 		fmt.Printf("requesting token for domain scope '%s': %s\n", domainName, url)
@@ -110,4 +113,16 @@ func main() {
 			break
 		}
 	}
+}
+
+func getIdentityProvider(cert *x509.Certificate) string {
+	issuer := cert.Issuer
+	issuerDN := fmt.Sprintf(
+		"CN=%s,OU=%s,O=%s,ST=%s,C=%s",
+		issuer.CommonName, issuer.OrganizationalUnit[0], issuer.Organization[0],
+		issuer.Province[0], issuer.Country[0])
+	s := sha256.New()
+	s.Write([]byte(issuerDN))
+	identityProvider := fmt.Sprintf("%x", s.Sum(nil))
+	return identityProvider
 }
